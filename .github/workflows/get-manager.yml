@@ -160,8 +160,8 @@ jobs:
         id: add_KSU
         run: |
           set -euo pipefail
-          EXPECTED_RELEASE_TAG='v1.3.13'
-          EXPECTED_MANAGER_VERSION='1.3.13_33338'
+          EXPECTED_RELEASE_TAG='v1.3.14'
+          EXPECTED_MANAGER_VERSION='1.3.14_33338'
           mkdir -p manager-artifacts
           latest_tag=$(gh release view --repo Only7rb-coder/zsu --json tagName --jq '.tagName')
           if [ "$latest_tag" != "$EXPECTED_RELEASE_TAG" ]; then
@@ -198,8 +198,8 @@ jobs:
             echo "::error::无法从 APK 文件名读取 manager 版本: $FILE"
             exit 1
           fi
-          if [ "$LABEL" != '1.3.13_33338' ]; then
-            echo "::error::Incompatible ZSU manager version: expected 1.3.13_33338, got $LABEL"
+          if [ "$LABEL" != '1.3.14_33338' ]; then
+            echo "::error::Incompatible ZSU manager version: expected 1.3.14_33338, got $LABEL"
             exit 1
           fi
           echo "ZSU manager version: $LABEL"
@@ -226,49 +226,19 @@ jobs:
         id: add_SUSFS
         run: |
           set -euo pipefail
-          BUILD_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/workflows/build.yml/runs?status=success" |
-          jq -r '.workflow_runs[0].id')
-          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
-            echo "::error::No successful SUSFS module build was found"
-            exit 1
-          fi
-
-          ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$BUILD_ID/artifacts")
-
-          DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].archive_download_url') 
-
-          NAME=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].name')
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ] || [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
-            echo "::error::The latest SUSFS module build did not expose a downloadable artifact"
-            exit 1
-          fi
-          echo "SUSFS_NAME=$NAME" >> $GITHUB_ENV
-          NAME="susfs-$NAME.zip"
-          
-          echo $DOWNLOAD_URL
-          echo $NAME
-          # 下载 Manager 文件
-          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o "$NAME" "$DOWNLOAD_URL"
-          echo "$NAME 文件已下载.zip"
-          
-          
-          # 解压 artifact zip 获取里面的模块文件
+          # Upstream CI artifacts are short-lived and are not currently
+          # exposed through the Actions API. Build from a pinned source tag.
+          SUSFS_REF='v1.5.2+'
+          echo "SUSFS_NAME=source-${SUSFS_REF}" >> "$GITHUB_ENV"
+          git clone --depth=1 --branch "$SUSFS_REF" \
+            https://github.com/sidex15/susfs4ksu-module.git susfs-source
+          rm -rf susfs-source/.git susfs-source/.github
+          mkdir -p susfs-temp
+          cp -a susfs-source/. susfs-temp/
+          (cd susfs-temp && zip -qr ../susfs-module.zip .)
+          rm -rf susfs-source susfs-temp
           mkdir -p susfs-module
-          unzip "$NAME" -d susfs-temp
-
-          # 检查解压后的内容：如果是散装文件则打包成 zip
-          cd susfs-temp
-          if ls *.zip 1>/dev/null 2>&1; then
-            # 里面已经是 zip 文件，直接移动
-            mv *.zip ../susfs-module/
-          else
-            # 是散装文件，打包成 zip
-            zip -r "../susfs-module/ksu_module_susfs.zip" .
-          fi
-          cd ..
-          rm -rf susfs-temp "$NAME"
+          mv susfs-module.zip susfs-module/ksu_module_susfs.zip
           module=$(find susfs-module -maxdepth 1 -type f -name '*.zip' -print -quit)
           if [ -z "$module" ] || ! unzip -tqq "$module"; then
             echo "::error::The SUSFS support module artifact is missing or invalid"

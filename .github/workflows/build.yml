@@ -329,10 +329,34 @@ jobs:
           FORMATTED_BRANCH="$INPUT_ANDROID_VERSION-$INPUT_KERNEL_VERSION-$INPUT_OS_PATCH_LEVEL"
           echo "初始化 repo，分支: common-${FORMATTED_BRANCH}"
 
+          # The AOSP kernel/common endpoint can throttle concurrent matrix
+          # fetches.  Route only this high-volume repository through the
+          # maintained AOSP GitHub mirror; the manifest and all other projects
+          # continue to come from the canonical AOSP service.
+          KERNEL_COMMON_MIRROR="https://github.com/aosp-mirror/kernel_common.git"
+          KERNEL_COMMON_AOSP="https://android.googlesource.com/kernel/common"
+
           $REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16
 
-          # 检查是否为已弃用的分支
-          REMOTE_BRANCH=$(git ls-remote https://android.googlesource.com/kernel/common ${FORMATTED_BRANCH})
+          # The mirror does not carry every historical Android 12 branch.
+          # Use it only when this exact branch exists; otherwise retain the
+          # canonical AOSP remote instead of rejecting a valid manifest.
+          if git ls-remote --exit-code "$KERNEL_COMMON_MIRROR" "refs/heads/${FORMATTED_BRANCH}" >/dev/null 2>&1; then
+            git config --global url."${KERNEL_COMMON_MIRROR}".insteadOf "$KERNEL_COMMON_AOSP"
+            REMOTE_BRANCH=$(git ls-remote "$KERNEL_COMMON_MIRROR" "refs/heads/${FORMATTED_BRANCH}")
+            echo "kernel/common source: ${KERNEL_COMMON_MIRROR}"
+          else
+            # Older Android branches may be retained by AOSP under the
+            # deprecated/ namespace rather than the normal branch namespace.
+            REMOTE_BRANCH=$(git ls-remote "$KERNEL_COMMON_AOSP" \
+              "refs/heads/${FORMATTED_BRANCH}" \
+              "refs/heads/deprecated/${FORMATTED_BRANCH}")
+            echo "kernel/common source: ${KERNEL_COMMON_AOSP}"
+          fi
+          if [ -z "$REMOTE_BRANCH" ]; then
+            echo "::error::kernel/common does not contain branch ${FORMATTED_BRANCH}"
+            exit 1
+          fi
           DEFAULT_MANIFEST_PATH=.repo/manifests/default.xml
 
           if grep -q deprecated <<< $REMOTE_BRANCH; then
@@ -340,7 +364,28 @@ jobs:
             sed -i "s/\"${FORMATTED_BRANCH}\"/\"deprecated\/${FORMATTED_BRANCH}\"/g" $DEFAULT_MANIFEST_PATH
           fi
 
-          $REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast
+          # Googlesource occasionally drops fetches while the matrix is busy.
+          # Retry transient project fetches inside repo, cap per-runner
+          # parallelism, then retry a resumable full sync with longer backoff.
+          SYNC_JOBS=$(nproc --all)
+          if [ "$SYNC_JOBS" -gt 4 ]; then SYNC_JOBS=4; fi
+          SYNC_ATTEMPTS=4
+          for attempt in $(seq 1 "$SYNC_ATTEMPTS"); do
+            echo "Android source sync attempt $attempt/$SYNC_ATTEMPTS (jobs=$SYNC_JOBS)"
+            if $REPO --trace sync -c -j"$SYNC_JOBS" --retry-fetches=5 --no-tags --fail-fast; then
+              echo "Android source sync succeeded on attempt $attempt"
+              break
+            fi
+
+            if [ "$attempt" -eq "$SYNC_ATTEMPTS" ]; then
+              echo "::error::Android source sync failed after $SYNC_ATTEMPTS attempts"
+              exit 1
+            fi
+
+            delay=$((60 * attempt))
+            echo "Android source sync failed; retrying in ${delay}s"
+            sleep "$delay"
+          done
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
 
       # ==================== 伪装 /proc/config.gz（自动检测） ====================
