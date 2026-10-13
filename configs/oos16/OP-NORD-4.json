@@ -15,7 +15,7 @@
   "disk_cleanup": false,
   "hmbird": false,
   "susfs": true,
-  "opt": false,
+  "opt": true,
   "ds": false,
   "bbg": false,
   "bbr": false,
